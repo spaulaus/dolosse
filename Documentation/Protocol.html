@@ -1,0 +1,72 @@
+<html><head></head><body>
+
+<h1>Protocol for Dolosse User Interface Modules to connect with the rest of the Dolosse System</h1>
+<h2>General system architecture</h2>
+
+<p>The system, as envisioned, will consist of four major parts. First, there will be the messaging system itself; consisting of a Kafka cluster, this will take messages from where they are generated and allow them to be read where they are needed. It will also include a dedicated consumer to handle the task of saving and archiving the messages for future offline analysis.</p>
+
+<p>Secondly, there will be a number of data producers. Each of these will produce data to (usually) a single Kafka topic<sup id="text1"><a href="#footnote1">1</a></sup>. These producers will produce data in the form of numbers, strings, and/or boolean values, each attached to a named variable.</p>
+
+<p>Thirdly, there will be a control program, used to control the equipment used in the experiment. This program will read its instructions from a dedicated Kafka topic and will follow them. These instructions will take the form of either setting the values for various setup parameters, or starting certain predefined actions (such as starting the experiment as the whole, pausing the experiment, or starting a calibration routine). Note that a control program may also be a producer of certain data, such as error messages or status updates; these would be produced to a separate topic under the data producer protocol.</p>
+
+<p>Finally, there is the user interface component. This component will connect to Kafka, read the data from the various data producers, display it on-screen in a manner understandable to the user, and (if necessary) send messages to the control program to set certain variables or start certain actions.</p>
+
+<p>This document is concerned only with the format of the data read and written by the user interface component.</p>
+
+
+<h2>Finding the data</h2>
+
+<p>The data from the producers will be spread across many topics; both the number and nature of these topics can easily change from one experiment to the next. For this reason, it is desirable to have a single topic<sup id="text2"><a href="#footnote2">2</a></sup> which provides the names of the other topics used in the experiment. In this way, the user interface component need only connect to a single topic to find out where to locate all other necessary data. The name of this central topic must be known to the user interface component in advance; either set at compile time or, more likely, discovered at run time (either from configuration files or user input).</p>
+
+<p>Note that, while there is a single central topic per experiment, it is possible that this single central topic may be recycled; for example, if there are a series of experiments using the same hardware, they may all use a single central topic. It is important, though, should such recycling be implemented, that these topics be arranged in such a way that multiple separate experiments which may run concurrently must use different central topics.</p>
+
+<p>This central topic contains one or more JSON objects. All but the most recent are ignored by the user interface; it is assumed that any previous objects are relics of past experiments and no longer valid. The final JSON object contains two or more elements. One of these elements is labelled "Data"; one is labelled "Control". Any other elements are ignored by the user interface<sup id="text3"><a href="#footnote3">3</a></sup>. Each of these elements itself contains a JSON array. This array contains a list of topics; where a topic may be either a single string (containing the name of the topic) or a JSON object. If a JSON object, then it will need to contain one field entitled "Name"; this will contain the name of the topic. It may then include further fields to provide data specific to that topic (such a a number of channels, a frequency value, or the location of the attached hardware).</p>
+
+<p>Examples:</p>
+
+<p>{"Data": [{"Name": "Dose_Data", "NumChannels": 17}, "NetMCA_Data", {"Name": "Pixie_Data", "Location": "Lab A"}], "Control":["Experiment_Control"]}
+{"Data": ["Dose_Data", "NetMCA_Data", "Pixie_Data"], "Control":["Experiment_Control"]}</p>
+
+<h2>Producer's Data</h2>
+
+<p>The data as produced by the data producers consists of a number of data variables and their values, in a JSON object. These values may be of numeric, string, or boolean type; alternatively, they may themselves be JSON objects containing further sub-variables in a hierarchical manner. A single update contains data that is related to the rest of the data in the upgrade; for example, if there is a "Time" field in the update, then the other variables are all assumed to have been measured (if appropriate) at the given time.</p>
+
+<p>As an extension to the basic JSON protocol, the string values "inf", "infinity", "-inf"', "-infinity", "NaN"', and any hexadecimal number preceded by "0x" will be converted to (and counted as) numeric values.</p>
+
+<p>The message may include a number of attributes (such as a 'category' field) that are intended to help the user interface component easily differentiate between messages, sort them and handle them appropriately. However, this is not mandatory; all such attributes are optional, and a given user interface component may either use or ignore such attributes.</p>
+
+<p>Some example data producer objects might include:</p>
+
+<p>{"Beam_Pos": {"X": 15, "Y":17}, "Charge":"0xab2"}
+    	{"category": "Measurement", "Time": 23, "ADC value": 195}    
+    	{"category": "errors", "msg":"Unable to read data from hardware"}</p>
+
+<p>Any variable(s) which the user interface component does not know how to handle should be ignored.</p>
+
+
+<h2>Control program interface</h2>
+
+<p>The control interface topic(s) will be both read from and written to by both the control program and the user interface component; however, most of the data will flow from the user interface component to the control program.</p>
+
+<p>There are three tasks that the user interface can order done via the control topic. The first of these is to set variables to arbitrary values; in order to do this, the user interface writes a JSON object to the control program interface, containing the name(s) of the variable(s) to be set, along with their new value(s). This follows the same structure as the variable messages from the data producers above.</p>
+
+<p>The second task that the user interface can order done is to turn on or off some toggleable function. For example, the user may wish to turn on (or turn off) a specific piece of measuring equipment. The user interface does this by writing to a specific variable<sup id="text4"><a href="#footnote4">4</a></sup> associated with the relevant function, and setting it to the value(s) required by the control program to turn the function on or off. This is probably simplest done by making the variable take on values of either True (for 'on') or False (for 'off'); but it may also be done by setting it to (say) the string values "start" or "stop", or in whichever other way the control program is expecting.</p>
+
+<p>Thirdly, the user interface can order the start of certain functions which run for a time, then stop automatically. This may be some form of autocalibration, or starting an experimental run. This is done much as in the above case, with the exception that the user interface program only turns the function on; the control program writes the message turning the function off to the control topic once the function has timed out or completed.</p>
+
+<p>Note that a single message may contain more than one of these types of communication. Exactly how this is handled, and in which order things are processed, is left entirely up to the control program. For this reason, when the order of operations is important, it is strongly recommended that the user interface split the commands into multiple messages.</p>
+
+<p>Here follow some examples:</p>
+
+<p>{"Max Permitted Dose": 1000, "Max Permitted Charge":"0xFFF"}    
+   	{"Start Auto-calibration": True, "Activate Solar Panels":False}    
+ 	{"category": "Control", "run": { action: "Start", "Comment" : "Starting new run to double-check odd measurements in the last run", "Number": 8}}</p>
+ 
+<h2>Footnotes:</h2>
+
+<p id="footnote1"><a href="#text1">[1]</a> In some specialised circumstances, however, one producer might produce to multiple topics</p>
+<p id="footnote2"><a href="#text2">[2]</a> Per experiment</p>
+<p id="footnote3"><a href="#text3">[3]</a> Later versions of the protocol may find some use in these elements</p>
+<p id="footnote4"><a href="#text4">[4]</a> This variable may, in turn, be the sub-variable of another variable in the control message</p>
+
+</body></html>
